@@ -1,9 +1,11 @@
+#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <math.h>
 #include <sys/time.h>
+#include <limits.h>
 
 /**
  * Auto-generated code below aims at helping you parse
@@ -39,7 +41,9 @@ typedef struct  s_cell_data
     int			can_spawn;
     int			in_rec_range;
 
+	int			is_walkable;
 	int			is_walkable_frontier;
+//	int			is_target;
 	int			rec_potential_amnt;
 	int			rec_potential_rate;
 	int			travel_potential_score;
@@ -70,14 +74,73 @@ typedef struct  s_map_data
 	t_cell	**build_cells;
 }   t_map;
 
+
+void	print_ally_cells(t_map *map)
+{
+	int	i;
+
+	fprintf(stderr, "Ally cells (%d):\n", map->nb_ally_occupied);
+	i = -1;
+	while (++i < map->nb_ally_occupied)
+	{
+		fprintf(stderr, "\t - (%d, %d)\n", map->ally_cells[i]->x, map->ally_cells[i]->y);
+	}
+}
+
+void	print_build_cells(t_map *map)
+{
+	int	i;
+
+	fprintf(stderr, "Build cells (%d):\n", map->nb_build_cells);
+	i = -1;
+	while (++i < map->nb_build_cells)
+	{
+		fprintf(stderr, "\t - (%d, %d)\n", map->build_cells[i]->x, map->build_cells[i]->y);
+	}
+}
+
+void	print_frontier_cells(t_map *map)
+{
+	int	i;
+
+	fprintf(stderr, "Frontier cells (%d):\n", map->nb_frontier_cells);
+	i = -1;
+	while (++i < map->nb_frontier_cells)
+	{
+		fprintf(stderr, "\t - (%d, %d)\n", map->frontier_cells[i]->x, map->frontier_cells[i]->y);
+	}
+}
+
+void	print_enemy_cells(t_map *map)
+{
+	int	i;
+
+	fprintf(stderr, "Enemy cells (%d):\n", map->nb_enemy_occupied);
+	i = -1;
+	while (++i < map->nb_enemy_occupied)
+	{
+		fprintf(stderr, "\t - (%d, %d)\n", map->enemy_cells[i]->x, map->enemy_cells[i]->y);
+	}
+}
+
 t_cell	*get_cell(t_map *map, int x, int y)
 {
 //    fprintf(stderr, "get_cell x, y : %d, %d. cells ptr : %p\n", x, y, map->cells);
 	return (map->cells + (y * map->w + x));
 }
 
+// Gives better score if cell is near the middle of the map on the x axis.
+int	bell_curve_rec_score_bonus(t_map *map, t_cell *cell)
+{
+	if (!cell->recycler)
+		return (0);
+	
+	int		xmu = (cell->x - (map->w / 2));
+	return ((int)(10.0f * expf(-2 * xmu * xmu)));
+}
+
 // NOT actual distance. Foregoing sqrt since this only serves as a comparisson indicator.
-float	dist_between(t_cell *c1, t_cell *c2)
+int	dist_between(t_cell *c1, t_cell *c2)
 {
 	int	dx, dy;
 
@@ -101,7 +164,7 @@ void	spawn_bot_at(t_cell *target)
 void	build_recycler_at(t_cell *target)
 {
 	if (target->can_build)
-		printf("SPAWN %d %d;", target->x, target->y);
+		printf("BUILD %d %d;", target->x, target->y);
 }
 
 int		is_frontier_cell(t_map *map, t_cell *cell, int *idx)
@@ -121,6 +184,7 @@ int		is_frontier_cell(t_map *map, t_cell *cell, int *idx)
 	return (0);
 }
 
+/*
 int		is_target_cell(t_map *map, t_cell *cell)
 {
 	int	i;
@@ -131,26 +195,30 @@ int		is_target_cell(t_map *map, t_cell *cell)
 			return (1);
 	return (0);
 }
-
+*/
 t_cell	*__pop_frontier_cell_to_targets(t_map *map, int i)
 {
 	t_cell	*front;
 
-	front = map->frontier_cells[0];
+	front = map->frontier_cells[i];
+	if (!front)// || is_target_cell(map, front))
+		return (NULL);
 	memcpy(map->frontier_cells + i, map->frontier_cells + i + 1, sizeof(t_cell *) * (map->nb_frontier_cells - i));
 	map->frontier_cells[--map->nb_frontier_cells] = NULL;
-	map->target_cells[map->nb_target_cells++] = map->frontier_cells[i];
+//	map->target_cells[map->nb_target_cells++] = map->frontier_cells[i];
 	return (front);
 }
 
 t_cell	*__put_spawn_cell_in_targets(t_map *map, t_cell *spawn)
 {
+//	if (map->nb_target_cells)
 	map->target_cells[map->nb_target_cells++] = spawn;
 	return (spawn);
 }
 
 t_cell	*find_best_spawn(t_map *map)
 {
+	static int	ally_spawn_idx = 0;
 	t_cell	**cells = map->frontier_cells;
 	int		best_score = -1;
 	int		i = 0;
@@ -168,16 +236,29 @@ t_cell	*find_best_spawn(t_map *map)
 		}
 		i++;
 	}
-	if (best_cell)
+	if (best_cell && !best_cell->recycler)
 	{
-		if (best_cell->left->owner == O_PLAYER)
-			best_cell = __put_spawn_cell_in_targets(map, best_cell->left);
-		else if (best_cell->right->owner == O_PLAYER)
-			best_cell = __put_spawn_cell_in_targets(map, best_cell->right);
-		else if (best_cell->up->owner == O_PLAYER)
-			best_cell = __put_spawn_cell_in_targets(map, best_cell->up);
-		else if (best_cell->down->owner == O_PLAYER)
-			best_cell = __put_spawn_cell_in_targets(map, best_cell->down);
+		fprintf(stderr, "Best spawn cell found\n");
+		if (best_cell->left && best_cell->left->owner == O_PLAYER)
+			best_cell = best_cell->left;
+//			best_cell = __put_spawn_cell_in_targets(map, best_cell->left);
+		else if (best_cell->right && best_cell->right->owner == O_PLAYER)
+			best_cell = best_cell->right;
+//			best_cell = __put_spawn_cell_in_targets(map, best_cell->right);
+		else if (best_cell->up && best_cell->up->owner == O_PLAYER)
+			best_cell = best_cell->up;
+//			best_cell = __put_spawn_cell_in_targets(map, best_cell->up);
+		else if (best_cell->down && best_cell->down->owner == O_PLAYER)
+			best_cell = best_cell->down;
+//			best_cell = __put_spawn_cell_in_targets(map, best_cell->down);
+		fprintf(stderr, "Best spawn : GOT'EM !\n");
+	}
+	else
+	{
+		fprintf(stderr, "Best spawn cell NOT found\n");
+		if (map->nb_ally_occupied)
+			best_cell = map->ally_cells[ally_spawn_idx % map->nb_ally_occupied];
+		ally_spawn_idx++;
 	}
 	return (best_cell);
 }
@@ -185,13 +266,14 @@ t_cell	*find_best_spawn(t_map *map)
 t_cell	*pop_best_move_for_bot(t_map *map, t_cell *bot)
 {
 	t_cell	**cells = map->frontier_cells;
-	float	shortest_dist = 999999999.9f;
-	float	curr_dist = 0;
+	int		shortest_dist = INT_MAX;
+	int		curr_dist = 0;
 	int		i = 0;
 	int		best_idx = -1;
 	t_cell	*best_cell;
 	
 	fprintf(stderr, "pop_best_move : entered : map %p, bot %p\n", map, bot);
+	fprintf(stderr, "pop_best_move : nb_frontier_cells : %d\n", map->nb_frontier_cells);
 
 	if (is_frontier_cell(map, bot->left, &i))
 		return (__pop_frontier_cell_to_targets(map, i));
@@ -201,15 +283,16 @@ t_cell	*pop_best_move_for_bot(t_map *map, t_cell *bot)
 		return (__pop_frontier_cell_to_targets(map, i));
 	else if (is_frontier_cell(map, bot->down, &i))
 		return (__pop_frontier_cell_to_targets(map, i));
-	fprintf(stderr, "pop_best_move : no \n", map, bot);
+//	fprintf(stderr, "pop_best_move : no \n", map, bot);
 	best_cell = NULL;
+	i = 0;
 	while (i < map->nb_frontier_cells)
 	{
-		curr_dist = dist_between(cells[i], bot);
-		if (curr_dist < shortest_dist)
+		curr_dist = dist_between(map->frontier_cells[i], bot);
+		if (curr_dist < shortest_dist && bot != map->frontier_cells[i])
 		{
 			shortest_dist = curr_dist;
-			best_cell = cells[i];
+			best_cell = map->frontier_cells[i];
 			best_idx = i;
 		}
 		i++;
@@ -269,22 +352,23 @@ int	is_walkable_frontier(t_map *map, t_cell *cell)
 {
 	int		i;
 	
-	if (!cell)
+	if (!cell || !cell->is_walkable)
 	{
 //		fprintf(stderr, "is_walkable_frontier : NO CELL\n");
 		return (0);
 	}
-	if (cell->scrap_amount && (cell->owner != O_PLAYER) && !cell->units)
+	if (cell->scrap_amount && (cell->owner != O_PLAYER))// && !cell->units)
 	{
+		if (is_frontier_cell(map, cell, &i))
+		{
+			fprintf(stderr, "is walkable : cell (%d, %d) discarded for being frontier cell already\n", cell->x, cell->y);
+			return (0);
+		}
 		cell->is_walkable_frontier = 1;
-		i = -1;
-		while (++i < map->nb_frontier_cells)
-			if (map->frontier_cells[i] == cell)
-				return (0);
 		cell->travel_potential_score = 0;
-        fprintf(stderr, "Calling traveling score calculator\n");
+//        fprintf(stderr, "Calling traveling score calculator\n");
 		traveling_score_calculator(cell, &cell->travel_potential_score);
-        fprintf(stderr, "Calling traveling score calculator returned\n");
+//        fprintf(stderr, "Calling traveling score calculator returned\n");
 		return (1);
 	}
 	return (0);
@@ -295,43 +379,52 @@ void	score_cell_recycler_potential(t_map *map, t_cell *cell)
 	int	amount;
 	int	rate;
 
+//	fprintf(stderr, "score rec pot : cell (%d, %d) evaluation\n", cell->x, cell->y);
 	if (!cell)
 	{
 		fprintf(stderr, "score_cell_recycler : NO CELL\n");
 		return ;
 	}
-
-	if (!cell->can_build)
-	{
-		cell->rec_potential_amnt = 0;
-		cell->rec_potential_rate = 0;
+	cell->rec_potential_amnt = 0;
+	cell->rec_potential_rate = 0;
+	if (!cell->can_build || cell->in_rec_range)
 		return ;
-	}
 
-	amount = cell->scrap_amount;
+//	fprintf(stderr, "score rec pot : cell (%d, %d) can build.\n", cell->x, cell->y);
+	amount = cell->scrap_amount + bell_curve_rec_score_bonus(map, cell);
 	cell->rec_potential_rate++;
 	if (cell->left && cell->left->scrap_amount > 0)	
 	{
 		cell->rec_potential_amnt += cell->left->scrap_amount;
-		cell->rec_potential_rate++;
+		cell->rec_potential_rate += 1 + (cell->left->owner == O_OPPONENT);
 	}
 	if (cell->right && cell->right->scrap_amount > 0)	
 	{
 		cell->rec_potential_amnt += cell->right->scrap_amount;
-		cell->rec_potential_rate++;
+		cell->rec_potential_rate += 1 + (cell->right->owner == O_OPPONENT);
 	}
 	if (cell->up && cell->up->scrap_amount > 0)	
 	{
 		cell->rec_potential_amnt += cell->up->scrap_amount;
-		cell->rec_potential_rate++;
+		cell->rec_potential_rate += 1 + (cell->up->owner == O_OPPONENT);
 	}
 	if (cell->down && cell->down->scrap_amount > 0)	
 	{
 		cell->rec_potential_amnt += cell->down->scrap_amount;
-		cell->rec_potential_rate++;
+		cell->rec_potential_rate += 1 + (cell->down->owner == O_OPPONENT);
 	}
-	if (cell->rec_potential_amnt > 35 && cell->rec_potential_rate > 2)
-		map->build_cells[map->nb_build_cells++] = cell;
+//	fprintf(stderr, "Recycler potentil cell (%d, %d) : amnt %d, rate %d\n", cell->x, cell->y, cell->rec_potential_amnt, cell->rec_potential_rate);	
+	if (cell->rec_potential_amnt > 25 && cell->rec_potential_rate > 2)
+	{
+		fprintf(stderr, "Cell (%d, %d) suited to build. Added.\n", cell->x, cell->y);
+		if (map->nb_build_cells && map->build_cells[0]->rec_potential_amnt < cell->rec_potential_amnt)
+		{
+			memmove(map->build_cells + 1, map->build_cells, sizeof(t_cell *) * map->nb_build_cells);
+			map->build_cells[0] = cell;
+		}
+		else
+			map->build_cells[map->nb_build_cells++] = cell;
+	}
 }
 
 void	print_map_info(t_map *map)
@@ -404,7 +497,7 @@ void	update_map_info_with_cell(t_map *map, t_cell *cell)
 //    fprintf(stderr, "update_map_info : map %p, cell %p, cell x, y: (%d, %d)\n", map, cell, cell->x, cell->y);
 	if (cell->owner == O_OPPONENT)
 	{
-        fprintf(stderr, "opp cell at : (%d, %d)\n", cell->x, cell->y);
+//        fprintf(stderr, "opp cell at : (%d, %d)\n", cell->x, cell->y);
 		map->nb_enemy_patches += 1;
 		if (cell->units > 0)
 		{
@@ -416,7 +509,7 @@ void	update_map_info_with_cell(t_map *map, t_cell *cell)
 	}
 	else if (cell->owner == O_PLAYER)
 	{
-        fprintf(stderr, "ally cell at : (%d, %d)\n", cell->x, cell->y);
+//		fprintf(stderr, "ally cell at : (%d, %d)\n", cell->x, cell->y);
 		map->nb_ally_patches += 1;
 		if (cell->units > 0)
 		{
@@ -425,19 +518,58 @@ void	update_map_info_with_cell(t_map *map, t_cell *cell)
 		}
 
 		// STACKS CURRENT FRONTIER CELLS
-        fprintf(stderr, "starting walkable frontier tests \n");
+//        fprintf(stderr, "starting walkable frontier tests \n");
         if (cell->recycler)
             map->nb_ally_recyclers += 1;
-		if (is_walkable_frontier(map, cell->left))
-			map->frontier_cells[map->nb_frontier_cells++] = cell->left;
-		if (is_walkable_frontier(map, cell->right))
-			map->frontier_cells[map->nb_frontier_cells++] = cell->right;
-		if (is_walkable_frontier(map, cell->up))
-			map->frontier_cells[map->nb_frontier_cells++] = cell->up;
-		if (is_walkable_frontier(map, cell->down))
-			map->frontier_cells[map->nb_frontier_cells++] = cell->down;
-        fprintf(stderr, "all walkable frontier tests DONE\n");
-		
+	}
+	cell->is_walkable = (cell->scrap_amount && !cell->recycler);
+}
+
+void	find_frontier_cells(t_map *map)
+{
+	t_cell	*cell;
+	int	i;
+	int	j;
+
+	i = -1;
+	while (++i < map->h)
+	{
+		j = -1;
+		while (++j < map->w)
+		{
+			cell = get_cell(map, j, i);
+			if (!cell)
+			{
+				fprintf(stderr, "cell (%d, %d) can't be found in map\n", j, i)
+				continue ;
+			}
+			if (cell->owner != O_PLAYER)
+				continue ;
+			if (fprintf(stderr, "checking if cell->left (%d, %d) from cell (%d, %d) is walkable frontier\n", cell->left->x, cell->left->y, cell->x, cell->y)
+				&& is_walkable_frontier(map, cell->left))
+			{
+				fprintf(stderr, "It is !\n");
+				map->frontier_cells[map->nb_frontier_cells++] = cell->left;
+			}
+			if (fprintf(stderr, "checking if cell->right (%d, %d) from cell (%d, %d) is walkable frontier\n", cell->right->x, cell->right->y, cell->x, cell->y)
+				&& is_walkable_frontier(map, cell->right))
+			{
+				fprintf(stderr, "It is !\n");
+				map->frontier_cells[map->nb_frontier_cells++] = cell->right;
+			}
+			if (fprintf(stderr, "checking if cell->up (%d, %d) from cell (%d, %d) is walkable frontier\n", cell->up->x, cell->up->y, cell->x, cell->y)
+				&& is_walkable_frontier(map, cell->up))
+			{
+				fprintf(stderr, "It is !\n");
+				map->frontier_cells[map->nb_frontier_cells++] = cell->up;
+			}
+			if (fprintf(stderr, "checking if cell->down (%d, %d) from cell (%d, %d) is walkable frontier\n", cell->down->x, cell->down->y, cell->x, cell->y)
+				&& is_walkable_frontier(map, cell->down))
+			{
+				fprintf(stderr, "It is !\n");
+				map->frontier_cells[map->nb_frontier_cells++] = cell->down;
+			}
+		}
 	}
 }
 
@@ -479,39 +611,49 @@ void	game_plan(t_map *map)
     fprintf(stderr, "PHASE ONE STARTS : MOVE \n");
 	/// PHASE ONE : MOVE
 	boti = -1;
+	int	no_more_targets = 0;
 	while (++boti < map->nb_ally_occupied)
 	{
-    	fprintf(stderr, "boti : %d\n", boti);
 		ally = map->ally_cells[boti];
+    	fprintf(stderr, "boti : %d, cell (%d, %d), nb units %d\n", boti, ally->x, ally->y, ally->units);
 		while (ally->units--)
 		{
     		fprintf(stderr, "ally->units : %d\n", ally->units);
 			target = pop_best_move_for_bot(map, ally);
     		fprintf(stderr, "best target found : %p\n", target);
+			if (!target)
+				break ;
     		fprintf(stderr, "best target found : (x, y) : (%d, %d)\n", target->x, target->y);
-			if (target)
-				move_bot_to(ally, target);
+			move_bot_to(ally, target);
 		}
 	}
     fprintf(stderr, "PHASE TWO STARTS : BUILD \n");
 	/// PHASE TWO : BUILD
 	while (map->my_matter >= 10)
 	{
-		if (map->nb_ally_recyclers < map->nb_ally_units)
+    	fprintf(stderr, "Build loop matter amount : %d, nb build cells : %d\n", map->my_matter, map->nb_build_cells);
+		if (map->nb_build_cells && map->nb_ally_recyclers < (map->nb_ally_units / 2))
 		{
-			if (map->nb_build_cells)
-			{
-				target = map->build_cells[--map->nb_build_cells];
-				build_recycler_at(target);
-			}
+			target = map->build_cells[--map->nb_build_cells];
+			build_recycler_at(target);
+    		fprintf(stderr, "building recycler at (%d, %d)\n", target->x, target->y);
+			map->my_matter -= 10;
 		}
 		else
 		{
-			target = find_best_spawn(map);
+    		fprintf(stderr, "Else spawn bot \n");
+			target = find_best_spawn(map);	// POTENTIAL INIFINIT LOOP WHEN ALMOST ALL CONQUERED
+    		fprintf(stderr, "spawn target : %p\n", target);
 			if (target)
+			{
+    			fprintf(stderr, "Spawning bot at (%d, %d)\n", target->x, target->y);
 				spawn_bot_at(target);
+				map->my_matter -= 10;
+			}
 		}
 	}
+    fprintf(stderr, "PHASE THREE STARTS : PROFIT$ \n");
+
 	/// PHASE THREE : PROFIT$ !?
 }
 
@@ -547,9 +689,16 @@ int main()
 				score_cell_recycler_potential(&map, cell);
             }
         }
+		find_frontier_cells(&map);
         delta_time = timer_us(&t0);
         fprintf(stderr, "delta_time : %zd\n", delta_time);
+
+		print_frontier_cells(&map);
+		print_ally_cells(&map);
+		print_enemy_cells(&map);
+		print_build_cells(&map);
 		game_plan(&map);
+    	fprintf(stderr, "GAME PLAN OVER AND DONE !\n");
 //		map.ally_cells[map.nb_ally_occupied] = NULL;
 //		map.enemy_cells[map.nb_enemy_occupied] = NULL;
 //		map.frontier_cells[map.nb_frontier_cells] = NULL;
